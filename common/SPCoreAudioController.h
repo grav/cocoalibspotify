@@ -39,6 +39,12 @@
 #import "SPSession.h"
 #import <AudioToolbox/AudioToolbox.h>
 
+typedef enum {
+    DominatingChannelBoth,
+    DominatingChannelLeft,
+    DominatingChannelRight
+} DominatingChannel;
+
 @class SPCoreAudioController;
 
 /** Provides delegate callbacks for SPCoreAudioController. */
@@ -125,5 +131,7 @@
 
 /** Returns the receiver's delegate. */
 @property (readwrite, nonatomic, assign) __unsafe_unretained id <SPCoreAudioControllerDelegate> delegate;
+
+@property (nonatomic, assign) DominatingChannel dominatingChannel;
 
 @end

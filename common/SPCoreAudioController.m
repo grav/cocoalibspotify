@@ -213,6 +213,7 @@ static NSTimeInterval const kTargetBufferLength = 0.5;
     AUGraphStart(audioProcessingGraph);
 	if (outputUnit != NULL)
 		AudioOutputUnitStart(outputUnit);
+    CAShow(audioProcessingGraph);
 }
 
 -(void)stopAudioQueue {
@@ -459,6 +460,7 @@ static void fillWithError(NSError **mayBeAnError, NSString *localizedDescription
     
 }
 
+
 static OSStatus AudioUnitRenderDelegateCallback(void *inRefCon,
 												AudioUnitRenderActionFlags *ioActionFlags,
 												const AudioTimeStamp *inTimeStamp,
@@ -495,7 +497,25 @@ static OSStatus AudioUnitRenderDelegateCallback(void *inRefCon,
 			
 		}
 	}
-    
+
+	for(int channel = 0; channel<1; channel++){
+		AudioBuffer *outputBuffer = &ioData->mBuffers[channel];
+		int *data = (int*)outputBuffer->mData;
+
+        if(self.dominatingChannel!=DominatingChannelBoth){
+            for(int frame=0;frame<inNumberFrames;frame++){
+                if(self.dominatingChannel==DominatingChannelLeft){
+                    data[frame] &= 0b00000000000000001111111111111111;
+                    data[frame] += (data[frame] << 16);
+                } else {
+                    data[frame] &= 0b11111111111111110000000000000000;
+                    data[frame] += (data[frame] >> 16);
+                }
+            }
+        }
+	}
+
+
     return noErr;
 }
 

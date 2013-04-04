@@ -111,4 +111,8 @@
 /** Returns the current playback volume, in the range 0.0 to 1.0. */
 @property (readwrite) double volume;
 
+- (void)left;
+- (void)right;
+- (void)both;
+
 @end

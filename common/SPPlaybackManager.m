@@ -217,4 +217,19 @@ static void * const kSPPlaybackManagerKVOContext = @"kSPPlaybackManagerKVOContex
 	[self.delegate playbackManagerWillStartPlayingAudio:self];
 }
 
+-(void)left
+{
+    self.audioController.dominatingChannel = DominatingChannelLeft;
+}
+
+- (void)right
+{
+    self.audioController.dominatingChannel = DominatingChannelRight;
+}
+
+- (void)both
+{
+    self.audioController.dominatingChannel = DominatingChannelBoth;
+}
+
 @end
