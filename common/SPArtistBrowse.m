@@ -4,30 +4,19 @@
 //
 //  Created by Daniel Kennett on 4/24/11.
 /*
- Copyright (c) 2011, Spotify AB
- All rights reserved.
- 
- Redistribution and use in source and binary forms, with or without
- modification, are permitted provided that the following conditions are met:
- * Redistributions of source code must retain the above copyright
- notice, this list of conditions and the following disclaimer.
- * Redistributions in binary form must reproduce the above copyright
- notice, this list of conditions and the following disclaimer in the
- documentation and/or other materials provided with the distribution.
- * Neither the name of Spotify AB nor the names of its contributors may 
- be used to endorse or promote products derived from this software 
- without specific prior written permission.
- 
- THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- DISCLAIMED. IN NO EVENT SHALL SPOTIFY AB BE LIABLE FOR ANY DIRECT, INDIRECT,
- INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT 
- LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
- OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ Copyright 2013 Spotify AB
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
  */
 
 // IMPORTANT: This class was implemented while enjoying a lovely spring afternoon by a lake 
@@ -50,7 +39,6 @@
 
 @property (nonatomic, readwrite, strong) NSArray *portraits;
 
-@property (nonatomic, readwrite, strong) NSArray *tracks;
 @property (nonatomic, readwrite, strong) NSArray *topTracks;
 @property (nonatomic, readwrite, strong) NSArray *albums;
 @property (nonatomic, readwrite, strong) NSArray *relatedArtists;
@@ -75,7 +63,6 @@ void artistbrowse_complete(sp_artistbrowse *result, void *userdata) {
 		NSError *error = errorCode == SP_ERROR_OK ? nil : [NSError spotifyErrorWithCode:errorCode];
 		
 		NSString *newBio = nil;
-		NSArray *newTracks = nil;
 		NSArray *newTopTracks = nil;
 		NSArray *newRelatedArtists = nil;
 		NSArray *newAlbums = nil;
@@ -84,18 +71,7 @@ void artistbrowse_complete(sp_artistbrowse *result, void *userdata) {
 		if (isLoaded) {
 			
 			newBio = [NSString stringWithUTF8String:sp_artistbrowse_biography(result)];
-			
-			int trackCount = sp_artistbrowse_num_tracks(result);
-			NSMutableArray *tracks = [NSMutableArray arrayWithCapacity:trackCount];
-			for (int currentTrack =  0; currentTrack < trackCount; currentTrack++) {
-				sp_track *track = sp_artistbrowse_track(result, currentTrack);
-				if (track != NULL) {
-					[tracks addObject:[SPTrack trackForTrackStruct:track inSession:artistBrowse.session]];
-				}
-			}
-			
-			newTracks = [NSArray arrayWithArray:tracks];
-			
+
 			int topTrackCount = sp_artistbrowse_num_tophit_tracks(result);
 			NSMutableArray *topTracks = [NSMutableArray arrayWithCapacity:topTrackCount];
 			for (int currentTopTrack =  0; currentTopTrack < topTrackCount; currentTopTrack++) {
@@ -145,7 +121,6 @@ void artistbrowse_complete(sp_artistbrowse *result, void *userdata) {
 		dispatch_async(dispatch_get_main_queue(), ^{
 			artistBrowse.loadError = error;
 			artistBrowse.biography = newBio;
-			artistBrowse.tracks = newTracks;
 			artistBrowse.relatedArtists = newRelatedArtists;
 			artistBrowse.albums = newAlbums;
 			artistBrowse.portraits = newPortraits;
@@ -166,7 +141,7 @@ void artistbrowse_complete(sp_artistbrowse *result, void *userdata) {
 +(void)browseArtistAtURL:(NSURL *)artistURL inSession:(SPSession *)aSession type:(sp_artistbrowse_type)browseMode callback:(void (^)(SPArtistBrowse *artistBrowse))block {
 	
 	[SPArtist artistWithArtistURL:artistURL inSession:aSession callback:^(SPArtist *artist) {
-		if (block) block([[SPArtistBrowse alloc] initWithArtist:artist inSession:aSession type:browseMode]);
+		if (block) dispatch_async(dispatch_get_main_queue(), ^() { block([[SPArtistBrowse alloc] initWithArtist:artist inSession:aSession type:browseMode]); });
 	}];
 }
 
@@ -196,18 +171,6 @@ void artistbrowse_complete(sp_artistbrowse *result, void *userdata) {
 	return [NSString stringWithFormat:@"%@: %@", [super description], self.artist];
 }
 
-@synthesize loaded;
-@synthesize loadError;
-@synthesize artist;
-@synthesize session;
-@synthesize portraits;
-@synthesize tracks;
-@synthesize topTracks;
-@synthesize albums;
-@synthesize relatedArtists;
-@synthesize biography;
-@synthesize artistBrowse = _artistBrowse;
-
 -(sp_artistbrowse *)artistBrowse {
 #if DEBUG
 	SPAssertOnLibSpotifyThread();
@@ -229,7 +192,7 @@ void artistbrowse_complete(sp_artistbrowse *result, void *userdata) {
 - (void)dealloc {
 	sp_artistbrowse *outgoing_browse = _artistBrowse;
 	_artistBrowse = NULL;
-	SPDispatchAsync(^() { if (outgoing_browse) sp_artistbrowse_release(outgoing_browse); });
+	if (outgoing_browse) SPDispatchAsync(^() { sp_artistbrowse_release(outgoing_browse); });
 }
 
 @end

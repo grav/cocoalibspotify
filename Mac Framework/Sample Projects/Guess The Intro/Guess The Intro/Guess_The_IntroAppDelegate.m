@@ -4,30 +4,19 @@
 //
 //  Created by Daniel Kennett on 05/05/2011.
 /*
- Copyright (c) 2011, Spotify AB
- All rights reserved.
- 
- Redistribution and use in source and binary forms, with or without
- modification, are permitted provided that the following conditions are met:
- * Redistributions of source code must retain the above copyright
- notice, this list of conditions and the following disclaimer.
- * Redistributions in binary form must reproduce the above copyright
- notice, this list of conditions and the following disclaimer in the
- documentation and/or other materials provided with the distribution.
- * Neither the name of Spotify AB nor the names of its contributors may 
- be used to endorse or promote products derived from this software 
- without specific prior written permission.
- 
- THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- DISCLAIMED. IN NO EVENT SHALL SPOTIFY AB BE LIABLE FOR ANY DIRECT, INDIRECT,
- INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT 
- LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
- OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ Copyright 2013 Spotify AB
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
  */
 
 #import "Guess_The_IntroAppDelegate.h"
@@ -43,40 +32,6 @@ static NSTimeInterval const kGameDuration = 60 * 5; // 5 mins
 static NSTimeInterval const kGameCountdownThreshold = 30.0;
 
 @implementation Guess_The_IntroAppDelegate
-
-@synthesize userNameField;
-@synthesize passwordField;
-@synthesize playlistNameField;
-@synthesize loginView;
-@synthesize window;
-@synthesize oneButton;
-@synthesize fourButton;
-@synthesize countdownProgress;
-@synthesize threeButton;
-@synthesize twoButton;
-
-@synthesize playbackManager;
-@synthesize playlist;
-
-@synthesize firstSuggestion;
-@synthesize secondSuggestion;
-@synthesize thirdSuggestion;
-@synthesize fourthSuggestion;
-
-@synthesize canPushOne;
-@synthesize canPushTwo;
-@synthesize canPushThree;
-@synthesize canPushFour;
-
-@synthesize userTopList;
-@synthesize regionTopList;
-
-@synthesize multiplier;
-@synthesize score;
-@synthesize roundStartDate;
-@synthesize gameStartDate;
-@synthesize trackPool;
-@synthesize roundTimer;
 
 - (void)applicationWillFinishLaunching:(NSNotification *)notification {
 
@@ -144,11 +99,11 @@ static NSTimeInterval const kGameCountdownThreshold = 30.0;
 	
 	// Invoked by clicking the "Login" button in the UI.
 	
-	if ([[userNameField stringValue] length] > 0 && 
-		[[passwordField stringValue] length] > 0) {
+	if ([[self.userNameField stringValue] length] > 0 &&
+		[[self.passwordField stringValue] length] > 0) {
 		
-		[[SPSession sharedSession] attemptLoginWithUserName:[userNameField stringValue]
-												   password:[passwordField stringValue]];
+		[[SPSession sharedSession] attemptLoginWithUserName:[self.userNameField stringValue]
+												   password:[self.passwordField stringValue]];
 	} else {
 		NSBeep();
 	}
@@ -258,38 +213,64 @@ static NSTimeInterval const kGameCountdownThreshold = 30.0;
 			[playlists addObject:[SPSession sharedSession].starredPlaylist];
 			[playlists addObject:[SPSession sharedSession].inboxPlaylist];
 			[playlists addObjectsFromArray:[SPSession sharedSession].userPlaylists.flattenedPlaylists];
-			
+
 			[SPAsyncLoading waitUntilLoaded:playlists timeout:kSPAsyncLoadingDefaultTimeout then:^(NSArray *loadedPlaylists, NSArray *notLoadedPlaylists) {
-				
+
 				// All of our playlists have loaded their metadata — wait for all tracks to load their metadata.
-				NSLog(@"[%@ %@]: %@ of %@ playlists loaded.", NSStringFromClass([self class]), NSStringFromSelector(_cmd), 
+				NSLog(@"[%@ %@]: %@ of %@ playlists loaded.", NSStringFromClass([self class]), NSStringFromSelector(_cmd),
 					  [NSNumber numberWithInteger:loadedPlaylists.count], [NSNumber numberWithInteger:loadedPlaylists.count + notLoadedPlaylists.count]);
-				
-				NSArray *playlistItems = [loadedPlaylists valueForKeyPath:@"@unionOfArrays.items"];
-				NSArray *tracks = [self tracksFromPlaylistItems:playlistItems];
-				
-				[SPAsyncLoading waitUntilLoaded:tracks timeout:kSPAsyncLoadingDefaultTimeout then:^(NSArray *loadedTracks, NSArray *notLoadedTracks) {
-					
-					// All of our tracks have loaded their metadata. Hooray!
-					NSLog(@"[%@ %@]: %@ of %@ tracks loaded.", NSStringFromClass([self class]), NSStringFromSelector(_cmd), 
-						  [NSNumber numberWithInteger:loadedTracks.count], [NSNumber numberWithInteger:loadedTracks.count + notLoadedTracks.count]);
-					
-					NSMutableArray *theTrackPool = [NSMutableArray arrayWithCapacity:loadedTracks.count];
-					
-					for (SPTrack *aTrack in loadedTracks) {
-						if (aTrack.availability == SP_TRACK_AVAILABILITY_AVAILABLE && [aTrack.name length] > 0)
-							[theTrackPool addObject:aTrack];
-					}
-					
-					self.trackPool = [NSMutableArray arrayWithArray:[[NSSet setWithArray:theTrackPool] allObjects]];
-					// ^ Thin out duplicates.
-					
-					[self startNewRound];
-					
+
+				[self getTracksFromPlaylists:loadedPlaylists then:^(NSSet *tracks) {
+
+					[SPAsyncLoading waitUntilLoaded:tracks timeout:kSPAsyncLoadingDefaultTimeout then:^(NSArray *loadedTracks, NSArray *notLoadedTracks) {
+
+						// All of our tracks have loaded their metadata. Hooray!
+						NSLog(@"[%@ %@]: %@ of %@ tracks loaded.", NSStringFromClass([self class]), NSStringFromSelector(_cmd),
+							  [NSNumber numberWithInteger:loadedTracks.count], [NSNumber numberWithInteger:loadedTracks.count + notLoadedTracks.count]);
+
+						NSMutableArray *theTrackPool = [NSMutableArray arrayWithCapacity:loadedTracks.count];
+
+						for (SPTrack *aTrack in loadedTracks) {
+							if (aTrack.availability == SP_TRACK_AVAILABILITY_AVAILABLE && [aTrack.name length] > 0)
+								[theTrackPool addObject:aTrack];
+						}
+
+						self.trackPool = [NSMutableArray arrayWithArray:[[NSSet setWithArray:theTrackPool] allObjects]];
+						// ^ Thin out duplicates.
+
+						[self startNewRound];
+					}];
 				}];
 			}];
 		}];
 	}];
+}
+
+-(void)getTracksFromPlaylists:(NSArray *)playlists then:(void (^)(NSSet *tracks))block {
+
+	__block NSMutableArray *mutablePlaylists = [NSMutableArray arrayWithArray:playlists];
+	__block NSMutableSet *tracks = [NSMutableSet set];
+
+	__block dispatch_block_t extractTracks = ^{
+
+		if (mutablePlaylists.count == 0) {
+			if (block) block([NSSet setWithSet:tracks]);
+			return;
+		}
+
+		SPPlaylist *playlist = [mutablePlaylists lastObject];
+		[mutablePlaylists removeObject:playlist];
+
+		[playlist fetchItemsInRange:NSMakeRange(0, playlist.itemCount) callback:^(NSError *error, NSArray *items) {
+			if (error == nil) {
+				// Playlists have playlist items rather than tracks, so make sure we extract the tracks.
+				[tracks addObjectsFromArray:[self tracksFromPlaylistItems:items]];
+			}
+			extractTracks();
+		}];
+	};
+
+	extractTracks();
 }
 
 -(NSArray *)playlistsInFolder:(SPPlaylistFolder *)aFolder {
@@ -448,7 +429,7 @@ static NSTimeInterval const kGameCountdownThreshold = 30.0;
 -(void)startNewRound {
 	
 	if (self.playbackManager.currentTrack != nil) {
-		[self.playlist addItem:self.playbackManager.currentTrack atIndex:self.playlist.items.count callback:^(NSError *error) {
+		[self.playlist addItem:self.playbackManager.currentTrack atIndex:self.playlist.itemCount callback:^(NSError *error) {
 			if (error) NSLog(@"%@", error);
 		}];
 	}
@@ -551,7 +532,7 @@ static NSTimeInterval const kGameCountdownThreshold = 30.0;
 	
 	self.roundStartDate = [NSDate date];
 	if (self.gameStartDate == nil)
-		self.gameStartDate = roundStartDate;
+		self.gameStartDate = self.roundStartDate;
 	
 	self.roundTimer = [NSTimer scheduledTimerWithTimeInterval:0.05
 													   target:self
@@ -565,5 +546,7 @@ static NSTimeInterval const kGameCountdownThreshold = 30.0;
 	self.canPushFour = YES;
 
 }
+
+-(void)playbackManagerIsFinishingPlayback:(SPPlaybackManager *)aPlaybackManager {}
 
 @end

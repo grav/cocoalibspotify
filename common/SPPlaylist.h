@@ -4,31 +4,20 @@
 //
 //  Created by Daniel Kennett on 2/14/11.
 /*
-Copyright (c) 2011, Spotify AB
-All rights reserved.
+ Copyright 2013 Spotify AB
 
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-      notice, this list of conditions and the following disclaimer in the
-      documentation and/or other materials provided with the distribution.
-    * Neither the name of Spotify AB nor the names of its contributors may 
-      be used to endorse or promote products derived from this software 
-      without specific prior written permission.
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
 
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL SPOTIFY AB BE LIABLE FOR ANY DIRECT, INDIRECT,
-INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT 
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
-OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
-OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
-ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ */
 
 /** This class represents a list of items, be it a user's starred list, inbox, or a traditional "playlist". */
 
@@ -40,7 +29,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 @class SPSession;
 @protocol SPPlaylistDelegate;
 
-@interface SPPlaylist : NSObject <SPPlaylistableItem, SPAsyncLoading, SPDelayableAsyncLoading>
+@interface SPPlaylist : NSObject <SPPlaylistableItem, SPAsyncLoading, SPDelayableAsyncLoading, SPPartialAsyncLoading>
 
 ///----------------------------
 /// @name Creating and Initializing Playlists
@@ -91,7 +80,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ///----------------------------
 
 /** Returns the playlist's delegate object. */
-@property (nonatomic, readwrite, assign) __unsafe_unretained id <SPPlaylistDelegate> delegate;
+@property (nonatomic, readwrite, weak) id <SPPlaylistDelegate> delegate;
 
 /** Returns `YES` if the playlist has changes not yet recognised by the Spotify servers, otherwise `NO`. */
 @property (nonatomic, readonly) BOOL hasPendingChanges;
@@ -145,7 +134,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 @property (nonatomic, readonly) sp_playlist *playlist;
 
 /** Returns the session object the playlist is loaded in. */
-@property (nonatomic, readonly, assign) __unsafe_unretained SPSession *session;
+@property (nonatomic, readonly, weak) SPSession *session;
 
 /** Returns the Spotify URI of the playlist profile, for example: `spotify:user:sarnesjo:playlist:3p2c7mmML3fIUh5fcZ8Hcq` */
 @property (nonatomic, readonly, copy) NSURL *spotifyURL;
@@ -170,8 +159,22 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 /// @name Working with Items
 ///----------------------------
 
-/** Returns an array of SPPlaylistItem objects representing playlist's item order. */
-@property (atomic, readonly, copy) NSArray *items;
+/* Returns the number of items in the playlist. */
+@property (nonatomic, readonly) NSUInteger itemCount;
+
+/** Fetch the playlist's items in the given range.
+ 
+ @note It's generally not a good idea to blindly request all the items in a
+ playlist without good reason as playlists can get *very* large and memory
+ usage is a concern on mobile devices. If you're implementing a table view, 
+ for instance, it's a better idea to only request the visible items plus a screen
+ or so of rows each way. See the `Playlist TableViews` example project to see
+ this in action.
+ 
+ @param range The range of items to retreive. Must be in the range [0..itemCount].
+ @param block Callback to be called with the requested items, or an error if one occurred.
+ */
+-(void)fetchItemsInRange:(NSRange)range callback:(void (^)(NSError *error, NSArray *items))block;
 
 /** Move item(s) to another location in the list. 
  
@@ -237,77 +240,41 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 /// @name Item Removal
 ///----------------------------
 
-/** Called before one or more items in the playlist will be removed from the playlist. 
- 
- @param aPlaylist The playlist in which items will be removed.
- @param items The items that will be removed.
- @param outgoingIndexes The indexes of the itemss.
- */
--(void)playlist:(SPPlaylist *)aPlaylist willRemoveItems:(NSArray *)items atIndexes:(NSIndexSet *)outgoingIndexes;
-
 /** Called after one or more items in the playlist were removed from the playlist. 
  
- @warning The index set passed to this method is not valid for the given items.
+ @warning The index set passed to this method is not valid for the given items since they've been removed.
  
  @param aPlaylist The playlist in which items were removed.
- @param items The items that were be removed.
  @param theseIndexesArentValidAnymore The (now invalid) indexes of the items.
  */
--(void)playlist:(SPPlaylist *)aPlaylist didRemoveItems:(NSArray *)items atIndexes:(NSIndexSet *)theseIndexesArentValidAnymore;
+-(void)playlist:(SPPlaylist *)aPlaylist didRemoveItemsAtIndexes:(NSIndexSet *)theseIndexesArentValidAnymore;
 
 ///----------------------------
 /// @name Item Addition
 ///----------------------------
 
-/** Called before one or more items are added to the playlist. 
- 
- @warning The index set passed to this method is not valid for the given items.
- 
- @param aPlaylist The playlist to which items will be added.
- @param items The items that will be added.
- @param theseIndexesArentYetValid The (invalid, for now) destination indexes of the items.
- */
--(void)playlist:(SPPlaylist *)aPlaylist willAddItems:(NSArray *)items atIndexes:(NSIndexSet *)theseIndexesArentYetValid;
-
 /** Called after one or more items are added to the playlist. 
  
  @param aPlaylist The playlist in which items were added.
- @param items The items that were added.
  @param newIndexes The destination indexes of the items.
  */
--(void)playlist:(SPPlaylist *)aPlaylist didAddItems:(NSArray *)items atIndexes:(NSIndexSet *)newIndexes;
+-(void)playlist:(SPPlaylist *)aPlaylist didAddItemsAtIndexes:(NSIndexSet *)newIndexes;
 
 ///----------------------------
 /// @name Item Reordering
 ///----------------------------
 
-/** Called before one or more items are moved within the playlist. 
+/** Called after one or more items are moved within the playlist.
  
  @param aPlaylist The playlist in which items will be moved.
- @param items The items that will be moved.
- @param oldIndexes The current indexes of the items.
- @param newIndexes The (invalid, for now) indexes that the items will end up at.
- */
--(void)playlist:(SPPlaylist *)aPlaylist willMoveItems:(NSArray *)items atIndexes:(NSIndexSet *)oldIndexes toIndexes:(NSIndexSet *)newIndexes;
-
-/** Called after one or more items are moved within the playlist. 
- 
- @param aPlaylist The playlist in which items will be moved.
- @param items The items that will be moved.
  @param oldIndexes The (invalid) old indexes of the items.
  @param newIndexes The now current indexes of the items.
  */
--(void)playlist:(SPPlaylist *)aPlaylist didMoveItems:(NSArray *)items atIndexes:(NSIndexSet *)oldIndexes toIndexes:(NSIndexSet *)newIndexes;
+-(void)playlist:(SPPlaylist *)aPlaylist didMoveItemsAtIndexes:(NSIndexSet *)oldIndexes toIndexes:(NSIndexSet *)newIndexes;
 
 ///----------------------------
 /// @name Other Changes
 ///----------------------------
-
-/** Called before a change that isn't a simple add, remove or move operation to the items in the playlist.
-
- @param aPlaylist The playlist in which items will be changed.
- */
--(void)playlistWillChangeItems:(SPPlaylist *)aPlaylist;
 
 /** Called after a change that isn't a simple add, remove or move operation to the items in the playlist.
 

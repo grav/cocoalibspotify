@@ -4,30 +4,19 @@
 //
 //  Created by Daniel Kennett on 2/19/11.
 /*
- Copyright (c) 2011, Spotify AB
- All rights reserved.
- 
- Redistribution and use in source and binary forms, with or without
- modification, are permitted provided that the following conditions are met:
- * Redistributions of source code must retain the above copyright
- notice, this list of conditions and the following disclaimer.
- * Redistributions in binary form must reproduce the above copyright
- notice, this list of conditions and the following disclaimer in the
- documentation and/or other materials provided with the distribution.
- * Neither the name of Spotify AB nor the names of its contributors may 
- be used to endorse or promote products derived from this software 
- without specific prior written permission.
- 
- THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- DISCLAIMED. IN NO EVENT SHALL SPOTIFY AB BE LIABLE FOR ANY DIRECT, INDIRECT,
- INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT 
- LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
- OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ Copyright 2013 Spotify AB
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
  */
 
 #import "SPPlaylistContainer.h"
@@ -42,11 +31,10 @@
 @interface SPPlaylistContainerCallbackProxy : NSObject
 // SPPlaylistContainerCallbackProxy is here to bridge the gap between -dealloc and the 
 // playlist callbacks being unregistered, since that's done async.
-@property (nonatomic, readwrite, assign) __unsafe_unretained SPPlaylistContainer *container;
+@property (nonatomic, readwrite, weak) SPPlaylistContainer *container;
 @end
 
 @implementation SPPlaylistContainerCallbackProxy
-@synthesize container;
 @end
 
 
@@ -55,7 +43,7 @@
 -(NSArray *)createPlaylistTree;
 
 @property (nonatomic, readwrite, strong) SPUser *owner;
-@property (nonatomic, readwrite, assign) __unsafe_unretained SPSession *session;
+@property (nonatomic, readwrite, weak) SPSession *session;
 @property (nonatomic, readwrite, getter=isLoaded) BOOL loaded;
 @property (nonatomic, readwrite, strong) NSArray *playlists;
 @property (nonatomic, readwrite, strong) NSMutableDictionary *folderCache;
@@ -152,16 +140,6 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 -(NSString *)description {
 	return [NSString stringWithFormat:@"%@: %@", [super description], [self playlists]];
 }
-
-@synthesize owner;
-@synthesize session;
-@synthesize container = _container;
-@synthesize loaded;
-@synthesize folderCache;
-@synthesize playlists;
-@synthesize callbackProxy;
-@synthesize playlistAddCallbackStack;
-@synthesize playlistRemoveCallbackStack;
 
 -(sp_playlistcontainer *)container {
 #if DEBUG
@@ -336,6 +314,10 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 
 #pragma mark -
 
++(NSSet *)keyPathsForValuesAffectingFlattenedPlaylists {
+	return [NSSet setWithObject:@"playlists"];
+}
+
 -(NSArray *)flattenedPlaylists {
 	
 	NSArray *tree = [self.playlists copy];
@@ -372,12 +354,11 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 		
 		if ([[name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] length] == 0 ||
 			[name length] > 255) {
-			dispatch_async(dispatch_get_main_queue(), ^() { if (block) block(nil); });
+			if (block) dispatch_async(dispatch_get_main_queue(), ^() { block(nil); });
 			return;
 		}
 		
-		if (block)
-			[self.playlistAddCallbackStack addObject:block];
+		if (block) [self.playlistAddCallbackStack addObject:block];
 			
 		sp_playlist *newPlaylist = sp_playlistcontainer_add_new_playlist(self.container, [name UTF8String]);
 		if (newPlaylist == NULL && block) {
@@ -396,14 +377,15 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 		NSError *error = nil;
 		SPPlaylistFolder *folder = nil;
 		
-		if (errorCode == SP_ERROR_OK)
+		if (errorCode == SP_ERROR_OK) {
 			folder = [[SPPlaylistFolder alloc] initWithPlaylistFolderId:sp_playlistcontainer_playlist_folder_id(self.container, 0)
 															  container:self
 															  inSession:self.session];
-		else if (error != NULL)
+		} else if (error != NULL) {
 			error = [NSError spotifyErrorWithCode:errorCode];
-		
-		dispatch_async(dispatch_get_main_queue(), ^() { if (block) block(folder, error); });
+		}
+
+		if (block) dispatch_async(dispatch_get_main_queue(), ^() { block(folder, error); });
 		
 	});
 }
@@ -415,7 +397,7 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 	else if ([playlistOrFolder isKindOfClass:[SPPlaylist class]])
 		[self removePlaylist:playlistOrFolder callback:block];
 	else if (block)
-		block([NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA]);
+		dispatch_async(dispatch_get_main_queue(), ^() { block([NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA]); });
 	
 }
 
@@ -428,8 +410,7 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 		
 		NSUInteger playlistCount = sp_playlistcontainer_num_playlists(self.container);
 		
-		if (block)
-			[self.playlistRemoveCallbackStack addObject:block];
+		if (block) [self.playlistRemoveCallbackStack addObject:block];
 		
 		NSError *error = [NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA];
 		
@@ -445,7 +426,7 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 			}
 		}
 		
-		if (error) {
+		if (error && block) {
 			[self.playlistRemoveCallbackStack removeObject:block];
 			dispatch_async(dispatch_get_main_queue(), ^{ block(error); });
 		}
@@ -508,23 +489,24 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 			}
 			
 			if (sourceIndex == NSNotFound) {
-				dispatch_async(dispatch_get_main_queue(), ^{ if (block) block([NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA]); });
+				if (block) dispatch_async(dispatch_get_main_queue(), ^{ block([NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA]); });
 				return;
 			}
 			
 			NSInteger destinationIndex = [self indexInFlattenedListForIndex:newIndex inFolder:aParentFolderOrNil];
 			
 			if (destinationIndex == NSNotFound) {
-				dispatch_async(dispatch_get_main_queue(), ^{ if (block) block([NSError spotifyErrorWithCode:SP_ERROR_INDEX_OUT_OF_RANGE]); });
+				if (block) dispatch_async(dispatch_get_main_queue(), ^{ block([NSError spotifyErrorWithCode:SP_ERROR_INDEX_OUT_OF_RANGE]); });
 				return;
 			}
 			
 			sp_error errorCode = sp_playlistcontainer_move_playlist(self.container, (int)sourceIndex, (int)destinationIndex, false);
 			
-			if (errorCode != SP_ERROR_OK)
-				dispatch_async(dispatch_get_main_queue(), ^{ if (block) block([NSError spotifyErrorWithCode:errorCode]); });
-			else if (block)
+			if (errorCode != SP_ERROR_OK) {
+				if (block) dispatch_async(dispatch_get_main_queue(), ^{ block([NSError spotifyErrorWithCode:errorCode]); });
+			} else if (block) {
 				dispatch_async(dispatch_get_main_queue(), ^{ block(nil); });
+			}
 		});
 		
 		
@@ -543,14 +525,14 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 			sourceIndex = folderRange.location;
 			
 			if (sourceIndex == NSNotFound) {
-				dispatch_async(dispatch_get_main_queue(), ^{ if (block) block([NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA]); });
+				if (block) dispatch_async(dispatch_get_main_queue(), ^{ block([NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA]); });
 				return;
 			}
 			
 			NSInteger destinationIndex = [self indexInFlattenedListForIndex:newIndex inFolder:aParentFolderOrNil];
 			
 			if (destinationIndex == NSNotFound) {
-				dispatch_async(dispatch_get_main_queue(), ^{ if (block) block([NSError spotifyErrorWithCode:SP_ERROR_INDEX_OUT_OF_RANGE]); });
+				if (block) dispatch_async(dispatch_get_main_queue(), ^{ block([NSError spotifyErrorWithCode:SP_ERROR_INDEX_OUT_OF_RANGE]); });
 				return;
 			}
 			
@@ -560,7 +542,7 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 				NSError *error = errorCode == SP_ERROR_OK ? nil : [NSError spotifyErrorWithCode:errorCode];
 				
 				if (error) {
-					dispatch_async(dispatch_get_main_queue(), ^() { if (block) block(error); });
+					if (block) dispatch_async(dispatch_get_main_queue(), ^() { block(error); });
 					return;
 				}
 				
@@ -576,12 +558,12 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 			if (sp_playlistcontainer_is_loaded(self.container))
 				container_loaded(self.container, (__bridge void *)(self.callbackProxy));
 			
-			dispatch_async(dispatch_get_main_queue(), ^() { if (block) block(nil); });
+			if (block) dispatch_async(dispatch_get_main_queue(), ^() { block(nil); });
 			
 		});
 		
 	} else if (block) {
-		block([NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA]);
+		dispatch_async(dispatch_get_main_queue(), ^() { block([NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA]); });
 	}
 }
 
@@ -591,7 +573,7 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 		playlist.owner == self.session.user ||
 		[self.flattenedPlaylists containsObject:playlist]) {
 
-		if (block) block([NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA]);
+		if (block) dispatch_async(dispatch_get_main_queue(), ^() { block([NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA]); });
 		return;
 	}
 
@@ -621,10 +603,12 @@ static sp_playlistcontainer_callbacks playlistcontainer_callbacks = {
 	SPPlaylistContainerCallbackProxy *outgoingProxy = self.callbackProxy;
 	self.callbackProxy.container = nil;
 	self.callbackProxy = nil;
-	
+
+	if (outgoing_container == NULL) return;
+
     SPDispatchAsync(^() {
-		if (outgoing_container) sp_playlistcontainer_remove_callbacks(outgoing_container, &playlistcontainer_callbacks, (__bridge void *)outgoingProxy);
-		if (outgoing_container) sp_playlistcontainer_release(outgoing_container);
+		sp_playlistcontainer_remove_callbacks(outgoing_container, &playlistcontainer_callbacks, (__bridge void *)outgoingProxy);
+		sp_playlistcontainer_release(outgoing_container);
     });
 }
 

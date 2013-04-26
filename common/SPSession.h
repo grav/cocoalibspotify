@@ -4,31 +4,20 @@
 //
 //  Created by Daniel Kennett on 2/14/11.
 /*
-Copyright (c) 2011, Spotify AB
-All rights reserved.
+ Copyright 2013 Spotify AB
 
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-      notice, this list of conditions and the following disclaimer in the
-      documentation and/or other materials provided with the distribution.
-    * Neither the name of Spotify AB nor the names of its contributors may 
-      be used to endorse or promote products derived from this software 
-      without specific prior written permission.
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
 
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL SPOTIFY AB BE LIABLE FOR ANY DIRECT, INDIRECT,
-INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT 
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
-OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
-OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
-ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ */
 
 #import <Foundation/Foundation.h>
 #import "CocoaLibSpotifyPlatformImports.h"
@@ -149,6 +138,28 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 								   loadingPolicy:(SPAsyncLoadingPolicy)policy
 										   error:(NSError **)error;
 
+/** Initializes the shared SPSession object.
+
+ Your application key and user agent must be valid to create an SPSession object.
+
+ @warning The C API that CocoaLibSpotify uses (LibSpotify) doesn't
+ support using multiple sessions in the same process. While you can either create and
+ store your SPSession object using this convenience method or yourself using +[SPSession initWithApplicationKey:userAgent:loadingPolicy:error:],
+ make sure you only have _one_ instance of SPSession active in your process at a time.
+
+ @param appKey Your application key as an NSData.
+ @param userAgent Your application's user agent (for example, com.yourcompany.MyGreatApp).
+ @param policy The loading policy to use.
+ @param properties A dictionary containing any special properties for this `SPSession` instance, otherwise `nil`.
+ @param error An error pointer to be filled with an NSError should a login problem occur.
+ @return `YES` the the shared session was initialized correctly, otherwise `NO`.
+ */
++(BOOL)initializeSharedSessionWithApplicationKey:(NSData *)appKey
+									   userAgent:(NSString *)userAgent
+								   loadingPolicy:(SPAsyncLoadingPolicy)policy
+									  properties:(NSDictionary *)properties
+										   error:(NSError **)error;
+
 /** The "debug" build ID of libspotify.
 
  This could be useful to display somewhere deep down in the user interface in
@@ -164,7 +175,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 /** Initialize a new SPSession object.
  
- Your application key and user agent must be valid to create an SPSession object. This is SPSession's designated initializer.
+ Your application key and user agent must be valid to create an SPSession object.
 
  @param appKey Your application key as an NSData.
  @param userAgent Your application's user agent (for example, com.yourcompany.MyGreatApp).
@@ -176,6 +187,23 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 				  userAgent:(NSString *)userAgent
 			  loadingPolicy:(SPAsyncLoadingPolicy)policy
 					  error:(NSError **)error;
+
+/** Initialize a new SPSession object.
+
+ Your application key and user agent must be valid to create an SPSession object. This is SPSession's designated initializer.
+
+ @param appKey Your application key as an NSData.
+ @param userAgent Your application's user agent (for example, com.yourcompany.MyGreatApp).
+ @param policy The loading policy to use.
+ @param properties A dictionary containing any special properties for this `SPSession` instance, otherwise `nil`.
+ @param error An error pointer to be filled with an NSError should a login problem occur.
+ @return Returns a newly initialised SPSession object.
+ */
+-(id)initWithApplicationKey:(NSData *)appKey
+				  userAgent:(NSString *)userAgent
+			  loadingPolicy:(SPAsyncLoadingPolicy)policy
+				 properties:(NSDictionary *)properties
+					  error:(NSError *__autoreleasing *)error;
 
 /** Attempt to login to the Spotify service.
  
@@ -265,12 +293,39 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 -(void)setPreferredBitrate:(sp_bitrate)bitrate;
 
+/** Returns `YES` if session is currently forced in offline mode. */
+@property (nonatomic, readwrite) BOOL forceOfflineMode;
+
+/** Returns the current connection type.
+ 
+ Possible values:
+ 
+ SP_CONNECTION_TYPE_UNKNOWN
+ Connection type unknown (Default).
+ 
+ SP_CONNECTION_TYPE_NONE
+ No connection.
+ 
+ SP_CONNECTION_TYPE_MOBILE
+ Mobile data (EDGE, 3G, etc).
+ 
+ SP_CONNECTION_TYPE_MOBILE_ROAMING
+ Roamed mobile data (EDGE, 3G, etc).
+ 
+ SP_CONNECTION_TYPE_WIFI
+ Wireless connection.
+ 
+ SP_CONNECTION_TYPE_WIRED
+ Ethernet cable, etc.
+ */
+@property (nonatomic, readonly) sp_connection_type connectionType;
+
 ///----------------------------
 /// @name Properties
 ///----------------------------
 
 /** Returns the current delegate object. */
-@property (nonatomic, readwrite, assign) __unsafe_unretained id <SPSessionDelegate> delegate;
+@property (nonatomic, readwrite, weak) id <SPSessionDelegate> delegate;
 
 /** Returns the opaque structure used by the C LibSpotify API. 
  
@@ -368,6 +423,19 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  `user`, `locale` and `userPlaylists` properties are set.
  */ 
 @property (nonatomic, readonly, getter=isLoaded) BOOL loaded;
+
+/** Returns `YES` if session allows syncing over Wifi. */
+@property (nonatomic, readwrite) BOOL allowSyncOverWifi;
+
+/** Returns `YES` if session allows syncing over cellular networks. */
+@property (nonatomic, readwrite) BOOL allowSyncOverMobile;
+
+/** Set the preffered audio bitrate for offline syncing.
+ 
+ @param bitrate The prefered bitrate for offline syncing.
+ @param allowResync Specifies weather already synced tracks should be resynced.
+ */
+- (void)setPreferredOfflineBitrate:(sp_bitrate)bitrate allowResync:(BOOL)allowResync;
 
 ///----------------------------
 /// @name User Content
@@ -575,14 +643,14 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  The playback delegate is responsible for dealing with playback events from CocoaLibSpotify, such as
  playback ending or being paused because the account is being used for playback elsewhere.
  */
-@property (nonatomic, readwrite, assign) __unsafe_unretained id <SPSessionPlaybackDelegate> playbackDelegate;
+@property (nonatomic, readwrite, weak) id <SPSessionPlaybackDelegate> playbackDelegate;
 
 /** Returns the session's audio delivery delegate object.
  
  The audio delivery delegate is responsible for pushing raw audio data provided by the session
  to the system's audio output. See the SimplePlayback sample project for an example of how to do this.
 */
-@property (nonatomic, readwrite, assign) __unsafe_unretained id <SPSessionAudioDeliveryDelegate> audioDeliveryDelegate;
+@property (nonatomic, readwrite, weak) id <SPSessionAudioDeliveryDelegate> audioDeliveryDelegate;
 
 /** Preloads playback assets for the given track.
  
@@ -755,34 +823,6 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 -(void)session:(id <SPSessionPlaybackProvider>)aSession didEncounterStreamingError:(NSError *)error;
 
-/** Called when audio data has been decompressed and should be pushed to the audio buffers. 
- 
- See the SimplePlayback sample project for an example of how to implement audio playback.
- 
- @warning This method is deprecated and will only be called if the -audioDeliveryDelegate property is NOT set.
- 
- @deprecated
- 
- @warning This function is called from an internal session thread - you need to have 
- proper synchronization!
- 
- @warning If this method is called with a frameCount of 0, an "audio discontinuity" has occurred - 
- for example, the user has seeked playback to another part of the track. You should clear audio buffers and prepare
- for new audio.
- 
- @warning This function must never block. If your output buffers are full you must 
- return 0 to signal that the library should retry delivery in a short while.
- 
- @param aSession The session providing the audio data.
- @param audioFrames A buffer containing the audio data.
- @param frameCount The number of frames in the buffer.
- @param audioFormat An sp_audioformat struct containing information about the audio format.
- @return Number of frames consumed. This value can be used to rate limit 
- the output from the library if your output buffers are saturated. Delivery will 
- be retried in about 100ms.
- */
--(NSInteger)session:(id <SPSessionPlaybackProvider>)aSession shouldDeliverAudioFrames:(const void *)audioFrames ofCount:(NSInteger)frameCount format:(const sp_audioformat *)audioFormat;
-
 @end
 
 /**
@@ -818,6 +858,12 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 @end
 
+///----------------------------
+/// @name Session Init Property Keys
+///----------------------------
+
+/** @constant If this key is set to `@(YES)`, the `SPSession` instance will not use a cache. */
+static NSString * const SPSessionNoCachePropertyKey = @"SPSessionNoCacheProperty";
 
 ///----------------------------
 /// @name Offline Sync Statistics Keys

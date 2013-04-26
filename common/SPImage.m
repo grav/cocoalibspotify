@@ -4,31 +4,20 @@
 //
 //  Created by Daniel Kennett on 2/20/11.
 /*
-Copyright (c) 2011, Spotify AB
-All rights reserved.
+ Copyright 2013 Spotify AB
 
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-      notice, this list of conditions and the following disclaimer in the
-      documentation and/or other materials provided with the distribution.
-    * Neither the name of Spotify AB nor the names of its contributors may 
-      be used to endorse or promote products derived from this software 
-      without specific prior written permission.
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
 
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL SPOTIFY AB BE LIABLE FOR ANY DIRECT, INDIRECT,
-INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT 
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
-OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
-OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
-ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ */
 
 #import "SPImage.h"
 #import "SPSession.h"
@@ -37,11 +26,10 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 @interface SPImageCallbackProxy : NSObject
 // SPImageCallbackProxy is here to bridge the gap between -dealloc and the 
 // playlist callbacks being unregistered, since that's done async.
-@property (nonatomic, readwrite, assign) __unsafe_unretained SPImage *image;
+@property (nonatomic, readwrite, weak) SPImage *image;
 @end
 
 @implementation SPImageCallbackProxy
-@synthesize image;
 @end
 
 @interface SPImage ()
@@ -52,7 +40,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 @property (nonatomic, readwrite, strong) SPPlatformNativeImage *image;
 @property (nonatomic, readwrite) sp_image *spImage;
 @property (nonatomic, readwrite, getter=isLoaded) BOOL loaded;
-@property (nonatomic, readwrite, assign) __unsafe_unretained SPSession *session;
+@property (nonatomic, readwrite, weak) SPSession *session;
 @property (nonatomic, readwrite, copy) NSURL *spotifyURL;
 @property (nonatomic, readwrite, strong) SPImageCallbackProxy *callbackProxy;
 
@@ -116,7 +104,7 @@ static NSMutableDictionary *imageCache;
 +(void)imageWithImageURL:(NSURL *)imageURL inSession:(SPSession *)aSession callback:(void (^)(SPImage *image))block {
 	
 	if ([imageURL spotifyLinkType] != SP_LINKTYPE_IMAGE) {
-		if (block) block(nil);
+		if (block) dispatch_async(dispatch_get_main_queue(), ^() { block(nil); });
 		return;
 	}
 	
@@ -188,13 +176,6 @@ static NSMutableDictionary *imageCache;
 	return _spImage;
 }
 
-@synthesize spImage = _spImage;
-@synthesize loaded;
-@synthesize session;
-@synthesize spotifyURL;
-@synthesize imageId;
-@synthesize callbackProxy;
-
 -(SPPlatformNativeImage *)image {
 	if (_image == nil && !hasRequestedImage)
 		[self startLoading];
@@ -260,10 +241,12 @@ static NSMutableDictionary *imageCache;
 	SPImageCallbackProxy *outgoingProxy = self.callbackProxy;
 	self.callbackProxy.image = nil;
 	self.callbackProxy = nil;
-    
+
+	if (outgoing_image == NULL) return;
+
     SPDispatchAsync(^() {
-		if (outgoing_image) sp_image_remove_load_callback(outgoing_image, &image_loaded, (__bridge void *)outgoingProxy);
-		if (outgoing_image) sp_image_release(outgoing_image);
+		sp_image_remove_load_callback(outgoing_image, &image_loaded, (__bridge void *)outgoingProxy);
+		sp_image_release(outgoing_image);
 	});
 }
 

@@ -1,34 +1,30 @@
 /*
- Copyright (c) 2011, Spotify AB
- All rights reserved.
- 
- Redistribution and use in source and binary forms, with or without
- modification, are permitted provided that the following conditions are met:
- * Redistributions of source code must retain the above copyright
- notice, this list of conditions and the following disclaimer.
- * Redistributions in binary form must reproduce the above copyright
- notice, this list of conditions and the following disclaimer in the
- documentation and/or other materials provided with the distribution.
- * Neither the name of Spotify AB nor the names of its contributors may 
- be used to endorse or promote products derived from this software 
- without specific prior written permission.
- 
- THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- DISCLAIMED. IN NO EVENT SHALL SPOTIFY AB BE LIABLE FOR ANY DIRECT, INDIRECT,
- INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT 
- LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
- OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ Copyright 2013 Spotify AB
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
  */
 
 #import "AppDelegate.h"
+#import "SPPlaylistItem+SPPlaylistItemOfflineExtensions.h"
 
 #error Please get an appkey.c file from developer.spotify.com and remove this error before building.
 #include "appkey.c"
+
+@interface AppDelegate ()
+
+@property (nonatomic, readwrite, strong) NSMutableIndexSet *loadingIndexes;
+
+@end
 
 @implementation AppDelegate
 
@@ -39,7 +35,6 @@
 @synthesize passwordField;
 @synthesize loginSheet;
 @synthesize trackTable;
-@synthesize trackArrayController;
 @synthesize playbackManager;
 
 -(void)applicationWillFinishLaunching:(NSNotification *)notification {
@@ -61,6 +56,8 @@
 	[self didChangeValueForKey:@"session"];
 	[self.window center];
 	[self.window orderFront:nil];
+
+	self.loadingIndexes = [NSMutableIndexSet new];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
@@ -68,6 +65,11 @@
 
 	[self addObserver:self
 		   forKeyPath:@"playbackManager.trackPosition"
+			  options:0
+			  context:nil];
+
+	[self addObserver:self
+		   forKeyPath:@"selectedPlaylist"
 			  options:0
 			  context:nil];
 	
@@ -111,7 +113,12 @@
         if (![[self.playbackProgressSlider cell] isHighlighted]) {
 			[self.playbackProgressSlider setDoubleValue:self.playbackManager.trackPosition];
 		}
-    } else {
+
+	} else if ([keyPath isEqualToString:@"selectedPlaylist"]) {
+		self.sparseArray = [[SPSparseList alloc] initWithDataSource:self.selectedPlaylist];
+		[self.loadingIndexes removeAllIndexes];
+		[self.trackTable reloadData];
+	} else {
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
     }
 }
@@ -174,6 +181,34 @@
 		 informativeTextWithFormat:@"This message was sent to you from the Spotify service."] runModal];
 }
 
+#pragma mark - TableView
+
+-(NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
+	return self.sparseArray.count;
+}
+
+-(id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
+
+	SPPlaylistItem *item = self.sparseArray[row];
+
+	if (item == nil && ![self.loadingIndexes containsIndex:row]) {
+		[self.sparseArray loadObjectsInRange:NSMakeRange(row, 1) callback:^{
+			[tableView reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
+								 columnIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)]];
+			[self.loadingIndexes removeIndex:row];
+		}];
+		[self.loadingIndexes addIndex:row];
+		return nil;
+	}
+
+	if ([tableColumn.identifier isEqualToString:@"name"]) {
+		return [item.item name];
+	} else {
+		return [item offlineTrackStatus];
+	}
+
+}
+
 #pragma mark -
 #pragma mark Playback
 
@@ -184,33 +219,34 @@
 	NSInteger row = [self.trackTable clickedRow];
 	if (row < 0) return;
 	
-	SPPlaylistItem *playlistItem = [self.trackArrayController.arrangedObjects objectAtIndex:row];
+	SPPlaylistItem *playlistItem = [self.sparseArray objectAtIndex:row];
 	if (playlistItem.itemClass != [SPTrack class]) return;
 	
 	SPTrack *track = playlistItem.item;
 	
 	if (track != nil) {
-		
-		if (!track.isLoaded) {
-			// Since we're trying to play a brand new track that may not be loaded, 
-			// we may have to wait for a moment before playing. Tracks that are present 
-			// in the user's "library" (playlists, starred, inbox, etc) are automatically loaded
-			// on login. All this happens on an internal thread, so we'll just try again in a moment.
-			[self performSelector:_cmd withObject:sender afterDelay:0.1];
-			return;
-		}
-		
-		[self.playbackManager playTrack:track callback:^(NSError *error) {
-			if (error) [self.window presentError:error];
+
+		[SPAsyncLoading waitUntilLoaded:track timeout:kSPAsyncLoadingDefaultTimeout then:^(NSArray *loadedItems, NSArray *notLoadedItems) {
+
+			if (!track.isLoaded) {
+				[NSAlert alertWithMessageText:@"Track not loaded"
+								defaultButton:@"OK"
+							  alternateButton:nil
+								  otherButton:nil
+					informativeTextWithFormat:@"Track could not be played because it didn't load in time."];
+				return;
+			}
+
+			[self.playbackManager playTrack:track callback:^(NSError *error) {
+				if (error) [self.window presentError:error];
+			}];
 		}];
-		return;
 	}
 }
 
-- (IBAction)seekToPosition:(id)sender {
+-(IBAction)seekToPosition:(id)sender {
 	
 	// Invoked by dragging the position slider in the UI.
-	
 	if (self.playbackManager.currentTrack != nil && self.playbackManager.isPlaying) {
 		[self.playbackManager seekToTrackPosition:[sender doubleValue]];
 	}
@@ -218,6 +254,19 @@
 
 - (IBAction)togglePlayPause:(id)sender {
 	self.playbackManager.isPlaying = !self.playbackManager.isPlaying;
+}
+
+- (IBAction)purgeUnseenTracks:(id)sender {
+	[self.sparseArray unloadObjectsInRange:NSMakeRange(0, self.sparseArray.count)];
+	[self.loadingIndexes removeAllIndexes];
+}
+
+- (IBAction)loadAllTracks:(id)sender {
+	NSRange range = NSMakeRange(0, self.sparseArray.count);
+	[self.loadingIndexes addIndexesInRange:range];
+	[self.sparseArray loadObjectsInRange:range callback:^{
+		[self.loadingIndexes removeIndexesInRange:range];
+	}];
 }
 
 @end

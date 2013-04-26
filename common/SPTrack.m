@@ -4,31 +4,20 @@
 //
 //  Created by Daniel Kennett on 2/19/11.
 /*
-Copyright (c) 2011, Spotify AB
-All rights reserved.
+ Copyright 2013 Spotify AB
 
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-      notice, this list of conditions and the following disclaimer in the
-      documentation and/or other materials provided with the distribution.
-    * Neither the name of Spotify AB nor the names of its contributors may 
-      be used to endorse or promote products derived from this software 
-      without specific prior written permission.
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
 
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL SPOTIFY AB BE LIABLE FOR ANY DIRECT, INDIRECT,
-INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT 
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
-OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
-OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
-ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ */
 
 #import "SPTrack.h"
 #import "SPTrackInternal.h"
@@ -58,7 +47,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 @property (nonatomic, readwrite, getter = isLocal) BOOL local;
 @property (nonatomic, readwrite) sp_track *track;
 
-@property (nonatomic, readwrite, assign) __unsafe_unretained SPSession *session;
+@property (nonatomic, readwrite, weak) SPSession *session;
 	
 @end
 
@@ -114,8 +103,19 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 												 selector:@selector(sessionUpdatedMetadata:)
 													 name:SPSessionDidUpdateMetadataNotification
 												   object:self.session];
-    }   
+    }
     return self;
+}
+
+-(NSUInteger)hash {
+	return (NSUInteger)_track;
+}
+
+-(BOOL)isEqual:(id)object {
+	if (![object isKindOfClass:[self class]])
+		return NO;
+
+	return [self hash] == [object hash];
 }
 
 -(NSString *)description {
@@ -178,7 +178,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 		for (currentArtist = 0; currentArtist < artistCount; currentArtist++) {
 			sp_artist *artist = sp_track_artist(self.track, (int)currentArtist);
 			if (artist != NULL) {
-				[array addObject:[SPArtist artistWithArtistStruct:artist inSession:session]];
+				[array addObject:[SPArtist artistWithArtistStruct:artist inSession:self.session]];
 			}
 		}
 		
@@ -213,6 +213,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 		sp_track_availability newAvailability = sp_track_get_availability(self.session.session, self.track);
 		sp_track_offline_status newOfflineStatus = sp_track_offline_get_status(self.track);
 		BOOL newStarred = sp_track_is_starred(self.session.session, self.track);
+		sp_track_offline_status status = sp_track_offline_get_status(self.track);
 
 		dispatch_async(dispatch_get_main_queue(), ^{
 			if (self.isLocal != newLocal) self.local = newLocal;
@@ -220,6 +221,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 			if (self.availability != newAvailability) self.availability = newAvailability;
 			if (self.offlineStatus != newOfflineStatus) self.offlineStatus = newOfflineStatus;
 			if (self.starred != newStarred) [self setStarredFromLibSpotifyUpdate:newStarred];
+			if (self.offlineStatus != status) [self setOfflineStatusFromLibSpotifyUpdate:status];
 		});
 	});
 }
@@ -241,22 +243,6 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #pragma mark -
 #pragma mark Properties 
-
-@synthesize album;
-@synthesize artists;
-@synthesize trackNumber;
-@synthesize discNumber;
-@synthesize popularity;
-@synthesize duration;
-@synthesize availability;
-@synthesize offlineStatus;
-@synthesize loaded;
-@synthesize name;
-@synthesize session;
-@synthesize starred = _starred;
-@synthesize local;
-@synthesize spotifyURL;
-@synthesize track = _track;
 
 -(sp_track *)track {
 #if DEBUG
@@ -282,7 +268,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 -(void)setStarred:(BOOL)starred {
     SPDispatchAsync(^() {
 		sp_track *track = self.track;
-		sp_track_set_starred([session session], (sp_track *const *)&track, 1, starred);
+		sp_track_set_starred(self.session.session, (sp_track *const *)&track, 1, starred);
 	});
 	_starred = starred;
 }
@@ -291,8 +277,8 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
 	sp_track *outgoing_track = _track;
 	_track = NULL;
-    SPDispatchAsync(^() { if (outgoing_track) sp_track_release(outgoing_track); });
-    session = nil;
+    if (outgoing_track) SPDispatchAsync(^() { sp_track_release(outgoing_track); });
+    _session = nil;
 }
 
 @end

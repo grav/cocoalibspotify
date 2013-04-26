@@ -4,31 +4,22 @@
 //
 //  Created by Daniel Kennett on 2/14/11.
 /*
- Copyright (c) 2011, Spotify AB
- All rights reserved.
- 
- Redistribution and use in source and binary forms, with or without
- modification, are permitted provided that the following conditions are met:
- * Redistributions of source code must retain the above copyright
- notice, this list of conditions and the following disclaimer.
- * Redistributions in binary form must reproduce the above copyright
- notice, this list of conditions and the following disclaimer in the
- documentation and/or other materials provided with the distribution.
- * Neither the name of Spotify AB nor the names of its contributors may 
- be used to endorse or promote products derived from this software 
- without specific prior written permission.
- 
- THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- DISCLAIMED. IN NO EVENT SHALL SPOTIFY AB BE LIABLE FOR ANY DIRECT, INDIRECT,
- INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT 
- LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
- OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ Copyright 2013 Spotify AB
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
  */
+
+#import <SystemConfiguration/SystemConfiguration.h>
 
 #import "SPSession.h"
 #import "SPErrorExtensions.h"
@@ -63,7 +54,6 @@
 @property (nonatomic, readwrite) sp_connectionstate connectionState;
 @property (nonatomic, readwrite, strong) NSMutableDictionary *playlistCache;
 @property (nonatomic, readwrite, strong) NSMutableDictionary *userCache;
-@property (nonatomic, readwrite, strong) NSMutableDictionary *trackCache;
 @property (nonatomic, readwrite, strong) NSError *offlineSyncError;
 
 @property (nonatomic, readwrite) sp_session *session;
@@ -84,10 +74,14 @@
 
 @property (readwrite, strong) NSTimer *prodTimeoutTimer;
 
+@property (nonatomic, readwrite) SCNetworkReachabilityRef reachabilityRef;
+@property (nonatomic, readwrite) sp_connection_type connectionType;
+
 @property (nonatomic, readwrite, copy) void (^logoutCompletionBlock) ();
 
 -(void)checkLoadingObjects;
 -(void)prodSessionForcefully;
+-(void)updateConnectionType;
 
 @end
 
@@ -318,15 +312,6 @@ static int music_delivery(sp_session *session, const sp_audioformat *format, con
 												   streamDescription:libSpotifyAudioDescription];
 			return framesConsumed;
 		}
-		
-		id <SPSessionPlaybackDelegate> playbackDelegate = sess.playbackDelegate;
-		if ([playbackDelegate respondsToSelector:@selector(session:shouldDeliverAudioFrames:ofCount:format:)]) {
-			int framesConsumed = (int)[playbackDelegate session:sess
-									   shouldDeliverAudioFrames:frames
-														ofCount:num_frames
-														 format:format]; 
-			return framesConsumed;
-		}
     }
 	
 	return num_frames;
@@ -430,7 +415,6 @@ static void offline_status_updated(sp_session *session) {
 		}
 		
 		dispatch_async(dispatch_get_main_queue(), ^{
-			
 			sess.offlineTracksRemaining = offlineTracksRemaining;
 			sess.offlinePlaylistsRemaining = offlinePlaylistsRemaining;
 			sess.offlineSyncing = syncing;
@@ -514,6 +498,16 @@ static void private_session_mode_changed(sp_session *session, bool is_private) {
 			[sess setPrivateSessionFromLibSpotifyUpdate:is_private];
 		});
 	}
+}
+
+static void reachability_callback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void* info) {
+    
+    @autoreleasepool {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [(__bridge SPSession *)info updateConnectionType];
+        });
+    }
+    
 }
 
 #if TARGET_OS_IPHONE
@@ -615,6 +609,15 @@ static CFRunLoopSourceRef libspotify_runloop_source;
 
 #pragma mark - Runloop & Thread Management
 
+inline void SPDispatchAsync(dispatch_block_t blockForLibSpotifyThread) { [SPSession dispatchToLibSpotifyThread:blockForLibSpotifyThread]; }
+
+inline void SPDispatchSyncIfNeeded(dispatch_block_t block) {
+	if (CFRunLoopGetCurrent() == [SPSession libSpotifyRunloop])
+		block();
+	else
+		[SPSession dispatchToLibSpotifyThread:block waitUntilDone:YES];
+}
+
 +(CFRunLoopRef)libSpotifyRunloop {
 	return libspotify_runloop;
 }
@@ -625,8 +628,8 @@ static CFRunLoopSourceRef libspotify_runloop_source;
 
 +(void)dispatchToLibSpotifyThread:(dispatch_block_t)block waitUntilDone:(BOOL)wait {
 
-	NSLock *waitingLock = nil;
-	if (wait) waitingLock = [NSLock new];
+	NSConditionLock	*waitingLock = nil;
+	if (wait) waitingLock = [NSConditionLock new];
 
 	// Make sure we only queue one thing at a time, and only
 	// when the runloop is ready for it.
@@ -635,7 +638,7 @@ static CFRunLoopSourceRef libspotify_runloop_source;
 	CFRunLoopPerformBlock(libspotify_runloop, kCFRunLoopDefaultMode, ^() {
 		[waitingLock lock];
 		if (block) { @autoreleasepool { block(); } }
-		[waitingLock unlock];
+		[waitingLock unlockWithCondition:1];
 	});
 
 	if (CFRunLoopIsWaiting(libspotify_runloop)) {
@@ -645,7 +648,7 @@ static CFRunLoopSourceRef libspotify_runloop_source;
 	
 	[runloopReadyLock unlock];
 	if (wait) {
-		[waitingLock lock];
+		[waitingLock lockWhenCondition:1];
 		[waitingLock unlock];
 	}
 }
@@ -708,9 +711,23 @@ static SPSession *sharedSession;
 								   loadingPolicy:(SPAsyncLoadingPolicy)policy
 										   error:(NSError **)error {
 
+	return [self initializeSharedSessionWithApplicationKey:appKey
+												 userAgent:aUserAgent
+											 loadingPolicy:policy
+												properties:nil
+													 error:error];
+}
+
++(BOOL)initializeSharedSessionWithApplicationKey:(NSData *)appKey
+									   userAgent:(NSString *)aUserAgent
+								   loadingPolicy:(SPAsyncLoadingPolicy)policy
+									  properties:(NSDictionary *)properties
+										   error:(NSError **)error {
+
 	sharedSession = [[SPSession alloc] initWithApplicationKey:appKey
 													userAgent:aUserAgent
 												loadingPolicy:policy
+												   properties:properties
 														error:error];
 	if (sharedSession == nil)
 		return NO;
@@ -732,12 +749,23 @@ static SPSession *sharedSession;
 			  loadingPolicy:(SPAsyncLoadingPolicy)policy
 					  error:(NSError **)error {
 
+	return [self initWithApplicationKey:appKey
+							  userAgent:aUserAgent
+						  loadingPolicy:policy
+							 properties:nil
+								  error:error];
+}
+
+-(id)initWithApplicationKey:(NSData *)appKey
+				  userAgent:(NSString *)aUserAgent
+			  loadingPolicy:(SPAsyncLoadingPolicy)policy
+				 properties:(NSDictionary *)properties
+					  error:(NSError *__autoreleasing *)error {
+
 	if ((self = [super init])) {
 
 		self.userAgent = aUserAgent;
 		self.loadingPolicy = policy;
-
-		self.trackCache = [[NSMutableDictionary alloc] init];
 		self.userCache = [[NSMutableDictionary alloc] init];
 		self.playlistCache = [[NSMutableDictionary alloc] init];
 		self.loadingObjects = [[NSMutableSet alloc] init];
@@ -747,11 +775,6 @@ static SPSession *sharedSession;
 		[self addObserver:self
 			   forKeyPath:@"connectionState"
 				  options:0
-				  context:(__bridge void *)kSPSessionKVOContext];
-
-		[self addObserver:self
-			   forKeyPath:@"starredPlaylist.items"
-				  options:NSKeyValueObservingOptionOld | NSKeyValueObservingOptionNew
 				  context:(__bridge void *)kSPSessionKVOContext];
 
 		if (appKey == nil || [aUserAgent length] == 0) {
@@ -787,23 +810,25 @@ static SPSession *sharedSession;
 		
 		// Find the caches directory for cache
 		NSString *cacheDirectory = nil;
-		
-		NSArray *potentialCacheDirectories = NSSearchPathForDirectoriesInDomains(NSCachesDirectory,
-																				 NSUserDomainMask,
-																				 YES);
-		
-		if ([potentialCacheDirectories count] > 0) {
-			cacheDirectory = [[potentialCacheDirectories objectAtIndex:0] stringByAppendingPathComponent:aUserAgent];
-		} else {
-			cacheDirectory = [NSTemporaryDirectory() stringByAppendingPathComponent:aUserAgent];
-		}
-		
-		if (![[NSFileManager defaultManager] fileExistsAtPath:cacheDirectory]) {
-			if (![[NSFileManager defaultManager] createDirectoryAtPath:cacheDirectory
-										   withIntermediateDirectories:YES
-															attributes:nil
-																 error:error]) {
-				return nil;
+
+		if ([[properties valueForKey:SPSessionNoCachePropertyKey] boolValue] != YES) {
+			NSArray *potentialCacheDirectories = NSSearchPathForDirectoriesInDomains(NSCachesDirectory,
+																					 NSUserDomainMask,
+																					 YES);
+
+			if ([potentialCacheDirectories count] > 0) {
+				cacheDirectory = [[potentialCacheDirectories objectAtIndex:0] stringByAppendingPathComponent:aUserAgent];
+			} else {
+				cacheDirectory = [NSTemporaryDirectory() stringByAppendingPathComponent:aUserAgent];
+			}
+
+			if (![[NSFileManager defaultManager] fileExistsAtPath:cacheDirectory]) {
+				if (![[NSFileManager defaultManager] createDirectoryAtPath:cacheDirectory
+											   withIntermediateDirectories:YES
+																attributes:nil
+																	 error:error]) {
+					return nil;
+				}
 			}
 		}
 		
@@ -826,8 +851,8 @@ static SPSession *sharedSession;
 			config.application_key = [appKey bytes];
 			config.application_key_size = [appKey length];
 			config.user_agent = [aUserAgent UTF8String];
-			config.settings_location = [applicationSupportDirectory UTF8String];
-			config.cache_location = [cacheDirectory UTF8String];
+			config.settings_location = applicationSupportDirectory == nil ? "" : [applicationSupportDirectory UTF8String];
+			config.cache_location = cacheDirectory == nil ? "" : [cacheDirectory UTF8String];
 			config.userdata = (__bridge void *)self;
 			config.callbacks = &_callbacks;
 			
@@ -842,11 +867,29 @@ static SPSession *sharedSession;
 		});
 		
 		if (creationError != nil) {
-			if (*error != NULL)
+			if (error != NULL)
 				*error = creationError;
-			
 			return nil;
 		}
+        
+        /* Setup reachability callbacks */
+        
+        SCNetworkReachabilityRef reachabilityRef = SCNetworkReachabilityCreateWithName(NULL, [@"ap.spotify.com" UTF8String]);
+        if (reachabilityRef) {
+
+            SCNetworkReachabilityContext context = {0, (__bridge void *)(self), NULL, NULL, NULL};
+            SCNetworkReachabilitySetCallback(reachabilityRef, reachability_callback, &context);
+            SCNetworkReachabilityScheduleWithRunLoop(reachabilityRef, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+            
+            self.reachabilityRef = reachabilityRef;
+            
+        }
+        
+        /* Setup default connection rules */
+        
+        _forceOfflineMode = !(_allowSyncOverWifi = _allowSyncOverMobile = YES);
+        [self updateConnectionRules];
+        
 	}
 	
 	return self;
@@ -884,53 +927,21 @@ static SPSession *sharedSession;
 		const char *user_name = sp_session_user_name(self.session);
 		NSString *loginUserName = user_name == NULL ? nil : [NSString stringWithUTF8String:user_name];
 		if (loginUserName.length == 0) loginUserName = nil;
-		dispatch_async(dispatch_get_main_queue(), ^{ if (block) block(loginUserName); });
+		if (block) dispatch_async(dispatch_get_main_queue(), ^{ block(loginUserName); });
 	});
 }
 
 -(void)flushCaches:(void (^)())completionBlock {
 	SPDispatchAsync(^() {
 		if (self.session) sp_session_flush_caches(self.session); 
-		dispatch_async(dispatch_get_main_queue(), ^{
-			if (completionBlock) completionBlock();
-		});
+		if (completionBlock) dispatch_async(dispatch_get_main_queue(), ^{ completionBlock(); });
 	});
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
     if (context == (__bridge void *)kSPSessionKVOContext) {
 		
-		if ([keyPath isEqualToString:@"starredPlaylist.items"]) {
-			// Bit of a hack to KVO the starred-ness of tracks.
-			
-			NSArray *oldStarredItems = [change valueForKey:NSKeyValueChangeOldKey];
-			if (oldStarredItems == (id)[NSNull null])
-				oldStarredItems = nil;
-			
-			NSArray *newStarredItems = [change valueForKey:NSKeyValueChangeNewKey];
-			if (newStarredItems == (id)[NSNull null])
-				newStarredItems = nil;
-			
-			NSMutableSet *someItems = [NSMutableSet set];
-			[someItems addObjectsFromArray:newStarredItems];
-			[someItems addObjectsFromArray:oldStarredItems];
-			
-			dispatch_async(dispatch_get_main_queue(), ^{
-				for (SPPlaylistItem *playlistItem in someItems) {
-					if (playlistItem.itemClass == [SPTrack class]) {
-						
-						SPTrack *track = playlistItem.item;
-						SPDispatchAsync(^() { 
-							BOOL starred = sp_track_is_starred(self.session, track.track);
-							dispatch_async(dispatch_get_main_queue(), ^() { [track setStarredFromLibSpotifyUpdate:starred]; });
-						});
-					}
-				}
-			});
-			
-			return;
-            
-        } else if ([keyPath isEqualToString:@"connectionState"]) {
+		if ([keyPath isEqualToString:@"connectionState"]) {
             
             if (self.connectionState == SP_CONNECTION_STATE_LOGGED_IN || self.connectionState == SP_CONNECTION_STATE_OFFLINE) {
 
@@ -1002,7 +1013,6 @@ static SPSession *sharedSession;
 }
 
 -(void)logout:(void (^)())completionBlock {
-	[self.trackCache removeAllObjects];
 	[self.userCache removeAllObjects];
 	self.inboxPlaylist = nil;
 	self.starredPlaylist = nil;
@@ -1026,31 +1036,18 @@ static SPSession *sharedSession;
 		sp_connectionstate state = sp_session_connectionstate(outgoing_session);
 		
 		if (state == SP_CONNECTION_STATE_LOGGED_OUT || state == SP_CONNECTION_STATE_UNDEFINED) {
-			dispatch_async(dispatch_get_main_queue(), ^{
-				self.logoutCompletionBlock = nil;
-				if (completionBlock) completionBlock();
-			});
+			if (completionBlock) {
+				dispatch_async(dispatch_get_main_queue(), ^{
+					self.logoutCompletionBlock = nil;
+					completionBlock();
+				});
+			}
 			return;
 		}
 
 		sp_session_logout(outgoing_session);
 	});
 }
-
-@synthesize connectionState;
-@synthesize playlistCache;
-@synthesize trackCache;
-@synthesize userCache;
-@synthesize inboxPlaylist;
-@synthesize starredPlaylist;
-@synthesize userPlaylists;
-@synthesize user;
-@synthesize locale;
-@synthesize offlineSyncError;
-@synthesize userAgent;
-@synthesize loadingPolicy;
-@synthesize loadingObjects;
-@synthesize logoutCompletionBlock;
 
 +(NSSet *)keyPathsForValuesAffectingLoaded {
 	return [NSSet setWithObjects:@"inboxPlaylist", @"starredPlaylist", @"user", @"locale", @"userPlaylists", nil];
@@ -1093,20 +1090,20 @@ static SPSession *sharedSession;
 		if (errorCode != SP_ERROR_OK)
 			error = [NSError spotifyErrorWithCode:errorCode];
 		
-		dispatch_async(dispatch_get_main_queue(), ^{ if (block) block(error); });
+		if (block) dispatch_async(dispatch_get_main_queue(), ^{ block(error); });
 	});
 }
 
 -(void)setScrobblingUserName:(NSString *)userName password:(NSString *)password forService:(sp_social_provider)service callback:(SPErrorableOperationCallback)block {
 	
 	if (userName.length == 0 || password.length == 0) {
-		if (block) block([NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA]);
+		if (block) dispatch_async(dispatch_get_main_queue(), ^() { block([NSError spotifyErrorWithCode:SP_ERROR_INVALID_INDATA]); });
 		return;
 	}
 	
 	SPDispatchAsync(^{
 		sp_session_set_social_credentials(self.session, service, userName.UTF8String, password.UTF8String);
-		dispatch_async(dispatch_get_main_queue(), ^{ if (block) block(nil); });
+		if (block) dispatch_async(dispatch_get_main_queue(), ^{ block(nil); });
 	});
 }
 
@@ -1121,7 +1118,7 @@ static SPSession *sharedSession;
 		if (errorCode != SP_ERROR_OK)
 			error = [NSError spotifyErrorWithCode:errorCode];
 		
-		dispatch_async(dispatch_get_main_queue(), ^{ if (block) block(out_state, error); });
+		if (block) dispatch_async(dispatch_get_main_queue(), ^{ block(out_state, error); });
 	});
 }
 
@@ -1136,7 +1133,7 @@ static SPSession *sharedSession;
 		if (errorCode != SP_ERROR_OK)
 			error = [NSError spotifyErrorWithCode:errorCode];
 		
-		dispatch_async(dispatch_get_main_queue(), ^{ if (block) block(out_state, error); });
+		if (block) dispatch_async(dispatch_get_main_queue(), ^{ block(out_state, error); });
 	});
 }
 
@@ -1144,26 +1141,12 @@ static SPSession *sharedSession;
 
 -(SPTrack *)trackForTrackStruct:(sp_track *)spTrack {
     // WARNING: This MUST be called on the LibSpotify worker thread.
-	
 	SPAssertOnLibSpotifyThread();
 	
 	if (spTrack == NULL)
 		return nil;
 
-	NSValue *ptrValue = [NSValue valueWithPointer:spTrack];
-	SPTrack *cachedTrack = [self.trackCache objectForKey:ptrValue];
-	
-    if (cachedTrack != nil) {
-        // track may have been cached without album browse specific fields
-        [cachedTrack updateAlbumBrowseSpecificMembers];
-        return cachedTrack;
-    }
-    
-	cachedTrack = [[SPTrack alloc] initWithTrackStruct:spTrack
-											 inSession:self];
-	
-    [self.trackCache setObject:cachedTrack forKey:ptrValue];
-    return cachedTrack;
+	return [[SPTrack alloc] initWithTrackStruct:spTrack inSession:self];
 }
 
 -(SPUser *)userForUserStruct:(sp_user *)spUser {
@@ -1193,7 +1176,7 @@ static SPSession *sharedSession;
 	SPAssertOnLibSpotifyThread();
 	
 	NSValue *ptrValue = [NSValue valueWithPointer:playlist];
-	SPPlaylist *cachedPlaylist = [playlistCache objectForKey:ptrValue];
+	SPPlaylist *cachedPlaylist = [self.playlistCache objectForKey:ptrValue];
 	
 	if (cachedPlaylist != nil) {
 		return cachedPlaylist;
@@ -1202,7 +1185,7 @@ static SPSession *sharedSession;
 	cachedPlaylist = [[SPPlaylist alloc] initWithPlaylistStruct:playlist
 													  inSession:self];
 	
-	[playlistCache setObject:cachedPlaylist forKey:ptrValue];
+	[self.playlistCache setObject:cachedPlaylist forKey:ptrValue];
 	return cachedPlaylist;
 }
 
@@ -1211,7 +1194,7 @@ static SPSession *sharedSession;
 	SPAssertOnLibSpotifyThread();
 	
 	NSNumber *wrappedId = [NSNumber numberWithUnsignedLongLong:playlistId];
-	SPPlaylistFolder *cachedPlaylistFolder = [playlistCache objectForKey:wrappedId];
+	SPPlaylistFolder *cachedPlaylistFolder = [self.playlistCache objectForKey:wrappedId];
 	
 	if (cachedPlaylistFolder != nil) {
 		return cachedPlaylistFolder;
@@ -1221,7 +1204,7 @@ static SPSession *sharedSession;
 																	container:aContainer
 																	inSession:self];
 	
-	[playlistCache setObject:cachedPlaylistFolder forKey:wrappedId];
+	[self.playlistCache setObject:cachedPlaylistFolder forKey:wrappedId];
 	return cachedPlaylistFolder;
 }
 
@@ -1234,7 +1217,7 @@ static SPSession *sharedSession;
 	sp_linktype linkType = [url spotifyLinkType];
 	
 	if (!(linkType == SP_LINKTYPE_TRACK || linkType == SP_LINKTYPE_LOCALTRACK)) {
-		if (block) block(nil);
+		if (block) dispatch_async(dispatch_get_main_queue(), ^() { block(nil); });
 		return;
 	}
 	
@@ -1256,7 +1239,7 @@ static SPSession *sharedSession;
 -(void)userForURL:(NSURL *)url callback:(void (^)(SPUser *user))block {
 	
 	if ([url spotifyLinkType] != SP_LINKTYPE_PROFILE) {
-		if (block) block(nil);
+		if (block) dispatch_async(dispatch_get_main_queue(), ^() { block(nil); });
 		return;
 	}
 	
@@ -1276,9 +1259,9 @@ static SPSession *sharedSession;
 }
 
 -(void)playlistForURL:(NSURL *)url callback:(void (^)(SPPlaylist *playlist))block {
-	
-	if ([url spotifyLinkType] != SP_LINKTYPE_PLAYLIST) {
-		if (block) block(nil);
+	sp_linktype linkType = [url spotifyLinkType];
+	if (linkType != SP_LINKTYPE_PLAYLIST && linkType != SP_LINKTYPE_STARRED) {
+		if (block) dispatch_async(dispatch_get_main_queue(), ^() { block(nil); });
 		return;
 	}
 	
@@ -1297,7 +1280,7 @@ static SPSession *sharedSession;
 }
 
 -(void)searchForURL:(NSURL *)url callback:(void (^)(SPSearch *search))block {
-	if (block) block([SPSearch searchWithURL:url inSession:self]);
+	if (block) dispatch_async(dispatch_get_main_queue(), ^() { block([SPSearch searchWithURL:url inSession:self]); });
 }
 
 -(void)albumForURL:(NSURL *)url callback:(void (^)(SPAlbum *album))block {
@@ -1363,7 +1346,7 @@ static SPSession *sharedSession;
 -(void)objectRepresentationForSpotifyURL:(NSURL *)aSpotifyUrlOfSomeKind callback:(void (^)(sp_linktype linkType, id objectRepresentation))block {
 	
 	if (aSpotifyUrlOfSomeKind == nil || block == nil) {
-		if (block) block(SP_LINKTYPE_INVALID, nil);
+		if (block) dispatch_async(dispatch_get_main_queue(), ^() { block(SP_LINKTYPE_INVALID, nil); });
 		return;
 	}
 	
@@ -1406,11 +1389,8 @@ static SPSession *sharedSession;
 															callback:block];	
 }
 
--(void)addLoadingObject:(id)object;
-{
-	SPDispatchAsync(^{
-		[self.loadingObjects addObject:object];
-	});
+-(void)addLoadingObject:(id)object {
+	SPDispatchAsync(^{ [self.loadingObjects addObject:object]; });
 }
 
 -(void)checkLoadingObjects{
@@ -1436,6 +1416,10 @@ static SPSession *sharedSession;
     SPDispatchAsync(^() { if (self.session) sp_session_preferred_bitrate(self.session, bitrate); });
 }
 
+-(void)setPreferredOfflineBitrate:(sp_bitrate)bitrate allowResync:(BOOL)allowResync {
+    SPDispatchAsync(^() { if (self.session) sp_session_preferred_offline_bitrate(self.session, bitrate, allowResync); });
+}
+
 -(void)setMaximumCacheSizeMB:(size_t)maximumCacheSizeMB {
     SPDispatchAsync(^() { if (self.session) sp_session_set_cache_size(self.session, maximumCacheSizeMB); });
 }
@@ -1444,22 +1428,42 @@ static SPSession *sharedSession;
 	SPDispatchAsync(^() {
 		NSTimeInterval interval = 0.0;
 		if (self.session) interval = sp_offline_time_left(self.session);
-		
-		dispatch_async(dispatch_get_main_queue(), ^{
-			if (block) block(interval);
-		});
+		if (block) dispatch_async(dispatch_get_main_queue(), ^{ block(interval); });
 	});
 }
 
-@synthesize offlineStatistics;
-@synthesize offlinePlaylistsRemaining;
-@synthesize offlineTracksRemaining;
-@synthesize offlineSyncing;
+-(void)setForceOfflineMode:(BOOL)forceOfflineMode {
+    
+    [self willChangeValueForKey:@"forceOfflineMode"];
+    
+    _forceOfflineMode = forceOfflineMode;
+    [self updateConnectionRules];
+    
+    [self didChangeValueForKey:@"forceOfflineMode"];
+    
+}
 
-@synthesize delegate;
-@synthesize playbackDelegate;
-@synthesize audioDeliveryDelegate;
-@synthesize session = _session;
+-(void)setAllowSyncOverWifi:(BOOL)allowSyncOverWifi {
+    
+    [self willChangeValueForKey:@"allowSyncOverWifi"];
+    
+    _allowSyncOverWifi = allowSyncOverWifi;
+    [self updateConnectionRules];
+    
+    [self didChangeValueForKey:@"allowSyncOverWifi"];
+    
+}
+
+-(void)setAllowSyncOverMobile:(BOOL)allowSyncOverMobile {
+    
+    [self willChangeValueForKey:@"allowSyncOverMobile"];
+    
+    _allowSyncOverMobile = allowSyncOverMobile;
+    [self updateConnectionRules];
+    
+    [self didChangeValueForKey:@"allowSyncOverMobile"];
+    
+}
 
 -(sp_session *)session {
 	
@@ -1484,7 +1488,7 @@ static SPSession *sharedSession;
 		if (errorCode != SP_ERROR_OK)
 			error = [NSError spotifyErrorWithCode:errorCode];
 			
-		dispatch_async(dispatch_get_main_queue(), ^{ if (block) block(error); });
+		if (block) dispatch_async(dispatch_get_main_queue(), ^{ block(error); });
 	});
 }
 
@@ -1504,12 +1508,12 @@ static SPSession *sharedSession;
 			error = [NSError spotifyErrorWithCode:errorCode];
 		}
 		
-		dispatch_async(dispatch_get_main_queue(), ^{ if (block) block(error); });
+		if (block) dispatch_async(dispatch_get_main_queue(), ^{ block(error); });
 	});
 }
 
 -(void)seekPlaybackToOffset:(NSTimeInterval)offset {
-	SPDispatchAsync(^() { if (self.session != NULL) sp_session_player_seek(self.session, (int)offset * 1000); });
+	SPDispatchAsync(^() { if (self.session) sp_session_player_seek(self.session, (int)offset * 1000); });
 }
 
 -(void)setPlaying:(BOOL)nowPlaying {
@@ -1539,6 +1543,43 @@ static SPSession *sharedSession;
 	SPDispatchAsync(^() { if (self.session) sp_session_player_unload(self.session); });
 }
 
+#pragma mark Connection Handling
+
+-(void)updateConnectionType {
+	SCNetworkReachabilityFlags flags;
+	SCNetworkReachabilityGetFlags(self.reachabilityRef, &flags);
+	sp_connection_type type = SP_CONNECTION_TYPE_UNKNOWN;
+
+	if ((flags & kSCNetworkReachabilityFlagsReachable) != 0) {
+#if TARGET_OS_IPHONE
+		type = SP_CONNECTION_TYPE_WIFI;
+		if ((flags & kSCNetworkReachabilityFlagsIsWWAN) != 0)
+			type = SP_CONNECTION_TYPE_MOBILE;
+#else
+		if ((flags & kSCNetworkReachabilityFlagsConnectionRequired) == 0 && (flags & kSCNetworkReachabilityFlagsInterventionRequired) == 0)
+			type = SP_CONNECTION_TYPE_WIFI;
+#endif
+	} else {
+		type = SP_CONNECTION_TYPE_NONE;
+	}
+
+	self.connectionType = type;
+	SPDispatchAsync(^() { if (self.session) sp_session_set_connection_type(self.session, type); });
+}
+
+-(void)updateConnectionRules {
+
+	sp_connection_rules rules = 0;
+
+	if (!self.forceOfflineMode)
+		rules |= SP_CONNECTION_RULE_NETWORK | SP_CONNECTION_RULE_NETWORK_IF_ROAMING;
+	if (self.allowSyncOverWifi)
+		rules |= SP_CONNECTION_RULE_ALLOW_SYNC_OVER_WIFI;
+	if (self.allowSyncOverMobile)
+		rules |= SP_CONNECTION_RULE_ALLOW_SYNC_OVER_MOBILE;
+
+	SPDispatchAsync(^() { if (self.session) sp_session_set_connection_rules(self.session, rules); });
+}
 
 #pragma mark libSpotify Run Loop
 
@@ -1581,18 +1622,26 @@ static SPSession *sharedSession;
 -(void)dealloc {
 	
 	[self removeObserver:self forKeyPath:@"connectionState"];
-	[self removeObserver:self forKeyPath:@"starredPlaylist.items"];
 
 	[self.prodTimeoutTimer invalidate];
 	self.prodTimeoutTimer = nil;
 
 	sp_session *outgoing_session = _session;
+	if (!outgoing_session) return;
 	
 	SPDispatchAsync(^{
-		if (!outgoing_session) return;
 		sp_session_player_unload(outgoing_session);
 		sp_session_logout(outgoing_session);
+		sp_session_release(outgoing_session);
 	});
+    
+    SCNetworkReachabilityRef reachabilityRef = self.reachabilityRef;
+    if (reachabilityRef) {
+        SCNetworkReachabilityUnscheduleFromRunLoop(reachabilityRef, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+        CFRelease(reachabilityRef);
+        self.reachabilityRef = nil;
+    }
+    
 }
 
 @end
